@@ -1,5 +1,6 @@
 """Path constants and configuration for the personal knowledge base."""
 
+import os
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -20,7 +21,13 @@ LOG_FILE = KNOWLEDGE_DIR / "log.md"
 STATE_FILE = SCRIPTS_DIR / "state.json"
 
 # ── Timezone ───────────────────────────────────────────────────────────
-TIMEZONE = "America/Chicago"
+# CA/OR (Pacific). Override with: MEMORY_TZ=America/New_York
+TIMEZONE = os.environ.get("MEMORY_TZ", "America/Los_Angeles")
+
+# ── Auto-compile trigger hour ──────────────────────────────────────────
+# Hour of day (24h, local time) after which flush.py auto-triggers compile.py.
+# Override with: MEMORY_COMPILE_HOUR=14
+COMPILE_AFTER_HOUR = int(os.environ.get("MEMORY_COMPILE_HOUR", "16"))
 
 
 def now_iso() -> str:

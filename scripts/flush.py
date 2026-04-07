@@ -139,12 +139,13 @@ respond with exactly: FLUSH_OK
     return response
 
 
-COMPILE_AFTER_HOUR = 18  # 6 PM local time
-
-
 def maybe_trigger_compilation() -> None:
     """If it's past the compile hour and today's log hasn't been compiled, run compile.py."""
     import subprocess as _sp
+
+    # Read compile hour from config (env-overridable via MEMORY_COMPILE_HOUR)
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    from config import COMPILE_AFTER_HOUR
 
     now = datetime.now(timezone.utc).astimezone()
     if now.hour < COMPILE_AFTER_HOUR:
