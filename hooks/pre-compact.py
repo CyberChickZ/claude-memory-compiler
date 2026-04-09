@@ -3,8 +3,8 @@ PreCompact hook - captures conversation transcript before auto-compaction.
 
 When Claude Code's context window fills up, it auto-compacts (summarizes and
 discards detail). This hook fires BEFORE that happens, extracting conversation
-context and spawning flush.py to extract knowledge that would otherwise
-be lost to summarization.
+context INCREMENTALLY (from the last flush offset) and spawning flush.py to
+extract knowledge that would otherwise be lost to summarization.
 
 The hook itself does NO API calls - only local file I/O for speed (<10s).
 """
@@ -17,6 +17,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -27,6 +28,7 @@ if os.environ.get("CLAUDE_INVOKED_BY"):
 ROOT = Path(__file__).resolve().parent.parent
 SCRIPTS_DIR = ROOT / "scripts"
 STATE_DIR = SCRIPTS_DIR
+FLUSH_STATE_FILE = SCRIPTS_DIR / "last-flush.json"
 
 logging.basicConfig(
     filename=str(SCRIPTS_DIR / "flush.log"),
@@ -35,16 +37,34 @@ logging.basicConfig(
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
-MAX_TURNS = 30
-MAX_CONTEXT_CHARS = 15_000
-MIN_TURNS_TO_FLUSH = 5
+MAX_CONTEXT_CHARS = 50_000
+MIN_TURNS_TO_FLUSH = 3
 
 
-def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
-    """Read JSONL transcript and extract last ~N conversation turns as markdown."""
+def load_flush_state() -> dict:
+    if FLUSH_STATE_FILE.exists():
+        try:
+            return json.loads(FLUSH_STATE_FILE.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def save_flush_state(state: dict) -> None:
+    FLUSH_STATE_FILE.write_text(json.dumps(state), encoding="utf-8")
+
+
+def extract_conversation_context(
+    transcript_path: Path, start_offset: int = 0
+) -> tuple[str, int, int]:
+    """Read JSONL transcript from start_offset, extract conversation turns.
+
+    Returns (context_text, turn_count, new_byte_offset).
+    """
     turns: list[str] = []
 
     with open(transcript_path, encoding="utf-8") as f:
+        f.seek(start_offset)
         for line in f:
             line = line.strip()
             if not line:
@@ -78,16 +98,17 @@ def extract_conversation_context(transcript_path: Path) -> tuple[str, int]:
                 label = "User" if role == "user" else "Assistant"
                 turns.append(f"**{label}:** {content.strip()}\n")
 
-    recent = turns[-MAX_TURNS:]
-    context = "\n".join(recent)
+        new_offset = f.tell()
+
+    context = "\n".join(turns)
 
     if len(context) > MAX_CONTEXT_CHARS:
-        context = context[-MAX_CONTEXT_CHARS:]
-        boundary = context.find("\n**")
+        context = context[:MAX_CONTEXT_CHARS]
+        boundary = context.rfind("\n**")
         if boundary > 0:
-            context = context[boundary + 1 :]
+            context = context[:boundary]
 
-    return context, len(recent)
+    return context, len(turns), new_offset
 
 
 def main() -> None:
@@ -108,7 +129,6 @@ def main() -> None:
 
     logging.info("PreCompact fired: session=%s", session_id)
 
-    # transcript_path can be empty (known Claude Code bug #13668)
     if not transcript_path_str or not isinstance(transcript_path_str, str):
         logging.info("SKIP: no transcript path")
         return
@@ -118,25 +138,37 @@ def main() -> None:
         logging.info("SKIP: transcript missing: %s", transcript_path_str)
         return
 
-    # Extract conversation context in the hook
+    # Incremental: read from last flush offset for this session
+    state = load_flush_state()
+    start_offset = 0
+    if state.get("session_id") == session_id:
+        start_offset = state.get("byte_offset", 0)
+
+    # Extract conversation context
     try:
-        context, turn_count = extract_conversation_context(transcript_path)
+        context, turn_count, new_offset = extract_conversation_context(
+            transcript_path, start_offset
+        )
     except Exception as e:
         logging.error("Context extraction failed: %s", e)
         return
 
-    if not context.strip():
-        logging.info("SKIP: empty context")
-        return
-
-    if turn_count < MIN_TURNS_TO_FLUSH:
-        logging.info("SKIP: only %d turns (min %d)", turn_count, MIN_TURNS_TO_FLUSH)
+    if not context.strip() or turn_count < MIN_TURNS_TO_FLUSH:
+        save_flush_state(
+            {"session_id": session_id, "timestamp": time.time(), "byte_offset": new_offset}
+        )
+        logging.info("SKIP: %d new turns since offset %d", turn_count, start_offset)
         return
 
     # Write context to a temp file for the background process
     timestamp = datetime.now(timezone.utc).astimezone().strftime("%Y%m%d-%H%M%S")
     context_file = STATE_DIR / f"flush-context-{session_id}-{timestamp}.md"
     context_file.write_text(context, encoding="utf-8")
+
+    # Update state BEFORE spawning flush (optimistic)
+    save_flush_state(
+        {"session_id": session_id, "timestamp": time.time(), "byte_offset": new_offset}
+    )
 
     # Spawn flush.py as a background process
     flush_script = SCRIPTS_DIR / "flush.py"
@@ -161,7 +193,10 @@ def main() -> None:
             stderr=subprocess.DEVNULL,
             creationflags=creation_flags,
         )
-        logging.info("Spawned flush.py for session %s (%d turns, %d chars)", session_id, turn_count, len(context))
+        logging.info(
+            "Spawned flush.py for session %s (%d turns, %d chars, offset %d→%d)",
+            session_id, turn_count, len(context), start_offset, new_offset,
+        )
     except Exception as e:
         logging.error("Failed to spawn flush.py: %s", e)
 

@@ -204,15 +204,8 @@ def main():
         logging.error("Context file not found: %s", context_file)
         return
 
-    # Deduplication: skip if same session was flushed within 60 seconds
-    state = load_flush_state()
-    if (
-        state.get("session_id") == session_id
-        and time.time() - state.get("timestamp", 0) < 60
-    ):
-        logging.info("Skipping duplicate flush for session %s", session_id)
-        context_file.unlink(missing_ok=True)
-        return
+    # Hooks handle incrementality via byte_offset in last-flush.json.
+    # flush.py just processes whatever context file it receives.
 
     # Read pre-extracted context
     context = context_file.read_text(encoding="utf-8").strip()
