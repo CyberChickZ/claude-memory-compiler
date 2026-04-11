@@ -117,12 +117,16 @@ respond with exactly: FLUSH_OK
     response = ""
 
     try:
+        # cwd=/tmp to avoid auto-loading the project's CLAUDE.md which
+        # has agent protocols telling the model to Read/Grep paper_notes.
+        # Those behavioral rules hijack the flush task and blow max_turns.
         async for message in query(
             prompt=prompt,
             options=ClaudeAgentOptions(
-                cwd=str(ROOT),
+                cwd="/tmp",
                 allowed_tools=[],
                 max_turns=2,
+                system_prompt="You are a summarization assistant. Respond only with plain text. Do not use any tools.",
             ),
         ):
             if isinstance(message, AssistantMessage):

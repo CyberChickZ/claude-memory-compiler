@@ -25,11 +25,22 @@ Configure in .claude/settings.json:
 """
 
 import json
+import os
 import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+# Recursion guard: if we were spawned by flush.py → Agent SDK → bundled claude,
+# do not inject memory protocol (it tells the bundled claude to use tools,
+# which blows max_turns=2 and returns exit code 1).
+if os.environ.get("CLAUDE_INVOKED_BY"):
+    sys.exit(0)
+
+# CWD-aware ROOT: use the project dir if it has memory framework deployed,
+# otherwise fallback to the canonical repo (where this script lives).
+_CWD = Path(os.getcwd())
+_CANONICAL = Path(__file__).resolve().parent.parent
+ROOT = _CWD if (_CWD / "scripts" / "flush.py").exists() else _CANONICAL
 KNOWLEDGE_DIR = ROOT / "knowledge"
 DAILY_DIR = ROOT / "daily"
 DOCS_DIR = ROOT / "docs"
