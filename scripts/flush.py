@@ -232,8 +232,9 @@ def main():
         logging.info("Result: saved to daily log (%d chars)", len(response))
         append_to_daily_log(response, "Session")
 
-    # Update dedup state
-    save_flush_state({"session_id": session_id, "timestamp": time.time()})
+    # NOTE: Do NOT touch last-flush.json here. The hook already wrote the
+    # byte_offset before spawning us; overwriting it here would clobber the
+    # offset and cause every subsequent flush to re-read from position 0.
 
     # Clean up context file
     context_file.unlink(missing_ok=True)
